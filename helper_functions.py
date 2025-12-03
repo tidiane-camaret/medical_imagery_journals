@@ -1,4 +1,5 @@
 import os
+import matplotlib.patches as patches
 
 import matplotlib.pyplot as plt
 import nibabel as nib
@@ -169,7 +170,7 @@ def evaluate_medsam_on_dataset(
     """
 
     MedSAM_CKPT_PATH = "model_checkpoints/medsam_vit_b.pth"
-    medsam_model = sam_model_registry['vit_b'](checkpoint=MedSAM_CKPT_PATH)
+    medsam_model = sam_model_registry["vit_b"](checkpoint=MedSAM_CKPT_PATH)
     medsam_model = medsam_model.to(device)
     medsam_model.eval()
 
@@ -232,9 +233,6 @@ def evaluate_medsam_on_dataset(
             # Format: [x_min, y_min, x_max, y_max]
             y_indices, x_indices = np.where(binary_mask > 0)
 
-
-
-
             if len(y_indices) == 0:
                 continue  # Skip if mask is empty
 
@@ -284,7 +282,7 @@ def evaluate_medsam_on_dataset(
             if union > 0:
                 dice = (2.0 * intersection) / union
                 dice_scores.append(dice)
-                print( f"Dice score = {dice:.4f}")
+                print(f"Dice score = {dice:.4f}")
 
             # Plot results if requested
             if plot_results:
@@ -493,24 +491,77 @@ def evaluate_trained_model(
     return mean_dice, dice_scores
 
 
-# Example usage
-"""
-# First load your trained model
-model = YourModelClass()
-model.load_state_dict(torch.load("path/to/model.pth"))
-model.to(device)
+def display_evolution(case_filename, img_dir, gts_dir, output_dir, class_id=1):
+    from matplotlib import colors
 
-# Create validation dataset and dataloader
-val_dataset = BrainSegmentationDataset(DS_DIR, val_dirs, target_labels=[1])
-val_loader = DataLoader(val_dataset, batch_size=4, shuffle=False)
+    cmap = colors.ListedColormap(["none", "blue"])
+    bounds = [0, 0.5, 1]
+    norm = colors.BoundaryNorm(bounds, cmap.N)
 
-# Evaluate the model
-mean_dice, all_dice_scores = evaluate_trained_model(
-    model=model,
-    val_loader=val_loader,
-    device="cuda",
-    max_samples=5,  # Only evaluate the first 5 samples
-    plot_results=True,  # Generate plots
-    save_plots_dir="./model_results"  # Save plots to this directory
-)
-"""
+    case_filename += ".npz"
+    img_filepath = os.path.join(img_dir, case_filename)
+    img_data = np.load(img_filepath)
+    img = img_data["imgs"]
+    gt_filepath = os.path.join(gts_dir, case_filename)
+    gt_data = np.load(gt_filepath)
+    gt = gt_data["gts"]
+    boxes = gt_data.get("boxes", None)
+    # print np.unique(gt)
+    print(f"classes in ground truth: {np.unique(gt)}")   
+    # check if class_id is in gt
+    assert class_id in np.unique(gt), f"Class {class_id} not found in ground truth"
+    
+    gt = (gt == class_id).astype(
+        np.float32
+    )  # Convert to binary mask for the selected class
+    # find x slice where the gt is most visible
+    x_slice = np.argmax(np.sum(gt > 0, axis=(1, 2)))
+
+    # Create subplot with 2 rows, 4 columns
+    fig, axes = plt.subplots(2, 4, figsize=(12, 6))
+    axes = axes.flatten()  # Flatten to make indexing easier
+
+    # Adjust spacing between subplots to be very minimal
+    plt.subplots_adjust(wspace=0.02, hspace=0.1)
+
+    # First plot: original image
+    axes[0].imshow(img[x_slice, :, :], cmap="gray")
+    axes[0].set_title("Original Image")
+    axes[0].axis("off")
+
+    # Second plot: ground truth overlay
+    axes[1].imshow(img[x_slice, :, :], cmap="gray")
+    axes[1].imshow(gt[x_slice, :, :], alpha=0.5, cmap=cmap, norm=norm)
+    axes[1].set_title("Ground Truth")
+    axes[1].axis("off")
+
+    if boxes is not None and len(boxes) >= class_id:
+        box_coords_1 = boxes[class_id - 1]
+        # Convert 3D coordinates to 2D for display
+        y_min = box_coords_1["z_mid_y_min"]
+        y_max = box_coords_1["z_mid_y_max"]
+        x_min = box_coords_1["z_mid_x_min"]
+        x_max = box_coords_1["z_mid_x_max"]
+        
+        rect = patches.Rectangle((x_min, y_min), x_max - x_min, y_max - y_min,
+                                linewidth=2, edgecolor='green', facecolor='none',
+                                linestyle=':', label='BBox')
+        axes[1].add_patch(rect)
+
+    # Load output data
+    output_filepath = os.path.join(output_dir, case_filename)
+    output_data = np.load(output_filepath)
+
+
+    # Display each segmentation object (6 iterations)
+    for i, seg in enumerate(output_data["all_segs"]):
+        seg = (seg == class_id).astype(
+            np.float32
+        )  # Convert to binary mask for the largest class
+        axes[i + 2].imshow(img[x_slice, :, :], cmap="gray")
+        axes[i + 2].imshow(seg[x_slice], cmap=cmap, norm=norm, alpha=0.5)
+        axes[i + 2].set_title(f"Iteration {i+1}")
+        axes[i + 2].axis("off")
+
+    plt.tight_layout()
+    plt.show()
